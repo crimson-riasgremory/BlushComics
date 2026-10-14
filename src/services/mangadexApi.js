@@ -95,132 +95,94 @@ export async function fetchAllCovers(mangadexIds) {
 
 /**
  * Fetch readable chapters for a manga from MangaDex.
- *
- * - Loads chapters in ALL languages, then picks one version per chapter number:
- *   English if it exists, otherwise any other language (so gaps in the English
- *   scans get filled). Non-English chapters are labelled in the group name.
- * - Chapters hosted elsewhere (licensed, e.g. MangaPlus/Viz) have no pages on
- *   MangaDex; they are not readable here, but are exposed via
- *   fetchExternalChapters() so the UI can link to the official source.
+ * Filters out external-only chapters (like MangaPlus links with 0 pages).
+ * Falls back to non-English languages if no English chapters have pages.
+ * Returns a deduplicated, sorted list of chapters.
  */
-export async function fetchChapters(mangadexId, limit = 5000) {
+export async function fetchChapters(mangadexId, limit = 500) {
   if (cache.chapters[mangadexId]) return cache.chapters[mangadexId];
-  const { readable } = await _loadFeed(mangadexId, limit);
-  cache.chapters[mangadexId] = readable;
-  return readable;
-}
 
-/** Chapters that exist only on an external official site (not readable here). */
-export async function fetchExternalChapters(mangadexId, limit = 5000) {
-  const { external } = await _loadFeed(mangadexId, limit);
-  return external;
-}
+  try {
+    // First try English chapters
+    let chapters = await _fetchChaptersForLanguages(mangadexId, ["en"], limit);
 
-// One in-flight request per manga (detail page + reader both ask for the feed)
-function _loadFeed(mangadexId, limit) {
-  if (!cache.feeds) cache.feeds = {};
-  if (!cache.feeds[mangadexId]) {
-    cache.feeds[mangadexId] = _fetchFeed(mangadexId, limit).catch((err) => {
-      delete cache.feeds[mangadexId]; // allow retry after a failure
-      console.warn(`Failed to fetch chapters for ${mangadexId}:`, err);
-      throw err;
-    });
+    // If no readable English chapters, try all languages
+    if (chapters.length === 0) {
+      chapters = await _fetchChaptersForLanguages(mangadexId, null, limit);
+    }
+
+    cache.chapters[mangadexId] = chapters;
+    return chapters;
+  } catch (err) {
+    console.warn(`Failed to fetch chapters for ${mangadexId}:`, err);
+    return [];
   }
-  return cache.feeds[mangadexId];
 }
 
-async function _fetchFeed(mangadexId, limit) {
-  const all = [];
-  const perPage = 500; // MangaDex feed maximum
+async function _fetchChaptersForLanguages(mangadexId, languages, limit) {
+  const allChapters = [];
   let offset = 0;
+  const perPage = Math.min(limit, 100);
 
+  // Paginate to get all chapters (MangaDex max 100 per request)
   while (offset < limit) {
     const params = new URLSearchParams({
       limit: String(perPage),
       offset: String(offset),
       "order[chapter]": "desc",
-      includeExternalUrl: "1",
     });
-    ["safe", "suggestive", "erotica"].forEach((r) => params.append("contentRating[]", r));
+    if (languages) {
+      languages.forEach(lang => params.append("translatedLanguage[]", lang));
+    }
     params.append("includes[]", "scanlation_group");
 
-    const res = await fetchWithRetry(`${MANGADEX_BASE}/manga/${mangadexId}/feed?${params.toString()}`);
+    const res = await fetch(`${MANGADEX_BASE}/manga/${mangadexId}/feed?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
+
     if (!json.data || json.data.length === 0) break;
-    all.push(...json.data);
-    if (json.data.length < perPage) break;
+    allChapters.push(...json.data);
+
+    if (json.data.length < perPage) break; // No more pages
     offset += perPage;
   }
 
-  const readableRaw = all.filter((ch) => ch.attributes.pages > 0);
-  const externalRaw = all.filter((ch) => !(ch.attributes.pages > 0) && ch.attributes.externalUrl);
+  // CRITICAL: Filter out chapters with 0 pages (external-only like MangaPlus)
+  const readableChapters = allChapters.filter(ch => ch.attributes.pages > 0);
 
-  // One entry per chapter number: English preferred, otherwise first other language
-  const byNumber = new Map();
-  readableRaw.forEach((ch) => {
-    const key = ch.attributes.chapter != null ? String(ch.attributes.chapter) : `id-${ch.id}`;
-    const isEn = ch.attributes.translatedLanguage === "en";
-    const existing = byNumber.get(key);
-    if (!existing || (isEn && existing.attributes.translatedLanguage !== "en")) {
-      byNumber.set(key, ch);
-    }
-  });
+  // Deduplicate by chapter number (keep first/best quality)
+  const seen = new Map();
+  const deduplicated = [];
 
-  const readable = [...byNumber.values()].map((ch) => {
+  readableChapters.forEach(ch => {
     const chNum = ch.attributes.chapter || "0";
-    const lang = ch.attributes.translatedLanguage || "en";
-    const groupName = ch.relationships?.find((r) => r.type === "scanlation_group")?.attributes?.name || "Scanlation Group";
-    return {
-      id: ch.id,
-      chapter: chNum,
-      volume: ch.attributes.volume || "",
-      title: ch.attributes.title || `Chapter ${chNum}`,
-      group: lang === "en" ? groupName : `${groupName} [${lang.toUpperCase()}]`,
-      lang,
-      verified: true,
-      likes: Math.floor(Math.random() * 300) + 20,
-      timeAgo: formatPublishTime(ch.attributes.publishAt),
-      date: ch.attributes.publishAt ? ch.attributes.publishAt.split("T")[0] : "Recent",
-      pages: ch.attributes.pages || 0,
-    };
-  });
-  readable.sort((a, b) => (parseFloat(b.chapter) || 0) - (parseFloat(a.chapter) || 0));
-
-  const extSeen = new Map();
-  externalRaw.forEach((ch) => {
-    const key = ch.attributes.chapter != null ? String(ch.attributes.chapter) : `id-${ch.id}`;
-    if (!extSeen.has(key)) {
-      extSeen.set(key, {
+    if (!seen.has(chNum)) {
+      seen.set(chNum, true);
+      const groupRel = ch.relationships?.find(r => r.type === "scanlation_group");
+      deduplicated.push({
         id: ch.id,
-        chapter: ch.attributes.chapter || "0",
-        title: ch.attributes.title || `Chapter ${ch.attributes.chapter || "0"}`,
-        url: ch.attributes.externalUrl,
+        chapter: chNum,
+        volume: ch.attributes.volume || "",
+        title: ch.attributes.title || `Chapter ${chNum}`,
+        group: groupRel?.attributes?.name || "Scanlation Group",
+        lang: ch.attributes.translatedLanguage || "en",
+        verified: true,
+        likes: Math.floor(Math.random() * 300) + 20,
+        timeAgo: formatPublishTime(ch.attributes.publishAt),
+        date: ch.attributes.publishAt ? ch.attributes.publishAt.split("T")[0] : "Recent",
+        pages: ch.attributes.pages || 0
       });
     }
   });
-  const readableNums = new Set(readable.map((c) => c.chapter));
-  const external = [...extSeen.values()]
-    .filter((c) => !readableNums.has(c.chapter)) // only chapters we can't read here
-    .sort((a, b) => (parseFloat(b.chapter) || 0) - (parseFloat(a.chapter) || 0));
 
-  return { readable, external };
-}
+  // Sort by chapter number descending
+  deduplicated.sort((a, b) => {
+    const numA = parseFloat(a.chapter) || 0;
+    const numB = parseFloat(b.chapter) || 0;
+    return numB - numA;
+  });
 
-// Retry once on rate-limit (429) or server errors
-async function fetchWithRetry(url, retries = 2) {
-  let lastErr;
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return res;
-      lastErr = new Error(`HTTP ${res.status}`);
-      if (res.status !== 429 && res.status < 500) break;
-    } catch (e) {
-      lastErr = e;
-    }
-    await new Promise((r) => setTimeout(r, 700 * (i + 1)));
-  }
-  throw lastErr;
+  return deduplicated;
 }
 
 // ─── CHAPTER PAGES (AT-HOME SERVER) ──────────────────────────────────────────
@@ -233,7 +195,8 @@ export async function fetchChapterPages(chapterId) {
   if (cache.pages[chapterId]) return cache.pages[chapterId];
 
   try {
-    const res = await fetchWithRetry(`${MANGADEX_BASE}/at-home/server/${chapterId}`);
+    const res = await fetch(`${MANGADEX_BASE}/at-home/server/${chapterId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
 
     const baseUrl = json.baseUrl;
