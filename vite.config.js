@@ -5,17 +5,24 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // Same proxy paths as vercel.json so dev and production behave the same
     proxy: {
       '/md-api': {
         target: 'https://api.mangadex.org',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/md-api/, ''),
+        headers: { 'User-Agent': 'AmoreComix/1.0 (+https://blush-comics.vercel.app)' },
       },
-      '/md-img': {
-        target: 'https://uploads.mangadex.org',
+      '/api/md': {
+        target: 'https://api.mangadex.org',
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/md-img/, ''),
+        rewrite: (p) => {
+          const u = new URL(p, 'http://localhost');
+          const path = (u.searchParams.get('path') || '').replace(/^\/+/, '');
+          u.searchParams.delete('path');
+          const qs = u.searchParams.toString();
+          return `/${path}${qs ? '?' + qs : ''}`;
+        },
+        headers: { 'User-Agent': 'AmoreComix/1.0 (+https://blush-comics.vercel.app)' },
       },
     },
   },
