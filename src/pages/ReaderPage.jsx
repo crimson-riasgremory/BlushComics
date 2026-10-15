@@ -81,6 +81,13 @@ export default function ReaderPage({ mangaId, chapterId }) {
     setPageError(null);
     setLivePages([]);
 
+    // Not a real MangaDex chapter id (e.g. stale link, or a title with no readable chapters)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveChapterId)) {
+      setPageError("This chapter isn't hosted on MangaDex.");
+      setIsLoadingPages(false);
+      return;
+    }
+
     fetchChapterPages(effectiveChapterId)
       .then((pages) => {
         if (pages.length > 0) {
@@ -478,6 +485,18 @@ export default function ReaderPage({ mangaId, chapterId }) {
               <p style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
                 This chapter may only be available on the publisher's website.
               </p>
+              {manga.officialLinks?.length > 0 && (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                  {manga.officialLinks.slice(0, 4).map((l) => (
+                    <a key={l.url} href={l.url} target="_blank" rel="noreferrer" className="btn-secondary" style={{ textDecoration: "none" }}>
+                      Read on {l.site} ↗
+                    </a>
+                  ))}
+                </div>
+              )}
+              <button className="btn-secondary" onClick={() => navigateTo("manga", { mangaId: manga.id })}>
+                Back to series page
+              </button>
               {nextChapter && (
                 <button
                   className="btn-primary"

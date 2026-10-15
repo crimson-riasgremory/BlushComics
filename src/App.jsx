@@ -12,6 +12,8 @@ import BrowsePage from "./pages/BrowsePage";
 import StatusBanner from "./components/StatusBanner";
 import { hydrateCuratedFromAniList } from "./data/romanceMangaDatabase";
 import { lookupAniListByTitles } from "./services/anilistApi";
+import { markReadability } from "./services/mangadexApi";
+import { ROMANCE_DATABASE } from "./data/romanceMangaDatabase";
 
 function MainApp() {
   const { route } = useRomance();
@@ -24,6 +26,7 @@ function MainApp() {
     hydrateCuratedFromAniList(lookupAniListByTitles)
       .then((changed) => changed && setCatalogTick((t) => t + 1))
       .catch((e) => console.warn("AniList hydration failed:", e));
+    markReadability(ROMANCE_DATABASE).then(() => setCatalogTick((t) => t + 1));
   }, []);
 
   return (

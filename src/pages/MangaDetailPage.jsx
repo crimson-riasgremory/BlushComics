@@ -232,10 +232,10 @@ export default function MangaDetailPage({ mangaId }) {
 
           {/* Action Buttons */}
           <div className="detail-actions" style={{ position: "relative" }}>
-            {activeChapters.length === 0 && externalChapters.length > 0 ? (
+            {activeChapters.length === 0 && !isLoadingChapters && (externalChapters.length > 0 || manga.officialLinks?.length > 0) ? (
               <a
                 className="btn-primary"
-                href={externalChapters[externalChapters.length - 1].url}
+                href={externalChapters.length > 0 ? externalChapters[externalChapters.length - 1].url : manga.officialLinks[0].url}
                 target="_blank"
                 rel="noreferrer"
                 style={{ textDecoration: "none" }}

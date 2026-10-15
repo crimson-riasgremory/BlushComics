@@ -264,8 +264,11 @@ async function _fetchFeed(mangadexId, limit) {
   const extSeen = new Map();
   externalRaw.forEach((ch) => {
     const key = ch.attributes.chapter != null ? String(ch.attributes.chapter) : `id-${ch.id}`;
-    if (!extSeen.has(key)) {
+    const existingExt = extSeen.get(key);
+    const isEnExt = ch.attributes.translatedLanguage === "en";
+    if (!existingExt || (isEnExt && !existingExt._en)) {
       extSeen.set(key, {
+        _en: isEnExt,
         id: ch.id,
         chapter: ch.attributes.chapter || "0",
         title: ch.attributes.title || `Chapter ${ch.attributes.chapter || "0"}`,
@@ -513,4 +516,91 @@ export async function pingMangaDex() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   if (!/pong/i.test(text)) throw new Error("proxy returned a non-API response");
   return true;
+}
+
+// ─── FIND TITLES THAT ARE ACTUALLY READABLE ON MANGADEX ──────────────────────
+// Most big romance series are officially licensed and have NO readable chapters on
+// MangaDex. These helpers probe for real, readable English chapters.
+
+const READ_CACHE_KEY = "amore_readable_v1";
+const READ_TTL = 6 * 60 * 60 * 1000;
+
+function _readCache() {
+  try {
+    return JSON.parse(sessionStorage.getItem(READ_CACHE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+function _writeCache(c) {
+  try {
+    sessionStorage.setItem(READ_CACHE_KEY, JSON.stringify(c));
+  } catch { /* storage full or blocked */ }
+}
+
+/** true if the title has at least one real (non-external) English chapter with pages. */
+export async function hasReadableChapters(mangadexId) {
+  const store = _readCache();
+  const hit = store[mangadexId];
+  if (hit && Date.now() - hit.t < READ_TTL) return hit.v;
+
+  const params = new URLSearchParams({ limit: "1", includeExternalUrl: "0" });
+  params.append("translatedLanguage[]", "en");
+  ["safe", "suggestive", "erotica"].forEach((r) => params.append("contentRating[]", r));
+  const res = await apiFetch(`/manga/${mangadexId}/feed?${params.toString()}`);
+  const json = await res.json();
+  const ok = (json.data || []).some((c) => c.attributes?.pages > 0 && !c.attributes?.externalUrl);
+
+  const fresh = _readCache();
+  fresh[mangadexId] = { v: ok, t: Date.now() };
+  _writeCache(fresh);
+  return ok;
+}
+
+/**
+ * Popular romance titles that really have readable English chapters.
+ * Calls onFound(listSoFar) as each verified title is found so the UI fills in progressively.
+ */
+export async function fetchReadableRomance({ target = 24, candidates = 60, onFound } = {}) {
+  const params = new URLSearchParams({
+    limit: String(candidates),
+    "order[followedCount]": "desc",
+    hasAvailableChapters: "true",
+  });
+  params.append("includes[]", "cover_art");
+  params.append("includes[]", "author");
+  params.append("availableTranslatedLanguage[]", "en");
+  params.append("includedTags[]", "423e2eae-a7a2-4a8b-ac03-a8351462d71d");
+  ["safe", "suggestive"].forEach((r) => params.append("contentRating[]", r));
+
+  const res = await apiFetch(`/manga?${params.toString()}`);
+  const json = await res.json();
+  const list = (json.data || []).map(transformMangaDexResult);
+
+  const found = [];
+  for (const m of list) {
+    try {
+      if (await hasReadableChapters(m.mangadexId)) {
+        m.readable = true;
+        found.push(m);
+        onFound?.([...found]);
+        if (found.length >= target) break;
+      }
+    } catch (e) {
+      console.warn("Readable check failed:", e);
+    }
+  }
+  return found;
+}
+
+/** Flag curated titles with readable=true/false (null if the check failed). */
+export async function markReadability(mangaList) {
+  for (const m of mangaList) {
+    if (!m.mangadexId) continue;
+    try {
+      m.readable = await hasReadableChapters(m.mangadexId);
+    } catch {
+      m.readable = null;
+    }
+  }
 }
