@@ -476,7 +476,7 @@ export function GET_MANGA_BY_ID(id) {
   }
 
   // 3. If it looks like a MangaDex UUID, create a placeholder object that can be enriched
-  const cleanId = id.replace(/^md-/, "");
+  const cleanId = /^al-/.test(id) ? null : id.replace(/^md-/, "");
   return {
     id: id,
     mangadexId: cleanId,
@@ -490,4 +490,23 @@ export function GET_MANGA_BY_ID(id) {
     synopsis: "Fetching details from MangaDex...",
     chapters: []
   };
+}
+
+/**
+ * Refresh curated entries (covers, banners, official links) from AniList so thumbnails
+ * keep working even if MangaDex or the proxy is down. Mutates in place; returns true
+ * if anything changed.
+ */
+export async function hydrateCuratedFromAniList(lookup) {
+  const results = await lookup(ROMANCE_DATABASE.map((m) => m.romajiTitle || m.title));
+  let changed = false;
+  results.forEach((r, i) => {
+    if (!r) return;
+    const m = ROMANCE_DATABASE[i];
+    if (r.cover) { m.cover = r.cover; changed = true; }
+    if (r.banner) m.banner = r.banner;
+    m.officialLinks = r.officialLinks;
+    m.anilistId = r.anilistId;
+  });
+  return changed;
 }

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { BookOpen, Star, Flame, Sparkles, Heart, ChevronRight, Play, Compass, Clock, Award } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
+import { onCoverError } from "../services/mangadexApi";
 import { ROMANCE_DATABASE, ROMANCE_GENRES } from "../data/romanceMangaDatabase";
 import MangaCard from "../components/MangaCard";
 
@@ -36,7 +37,7 @@ export default function HomePage() {
         <div className="hero-overlay" />
         <div className="hero-content">
           <img referrerPolicy="no-referrer"
-            src={currentHero.cover}
+            src={currentHero.cover} onError={onCoverError}
             alt={currentHero.title}
             className="hero-cover"
             onClick={() => navigateTo("manga", { mangaId: currentHero.id })}
@@ -162,7 +163,7 @@ export default function HomePage() {
                   onClick={() => navigateTo("reader", { mangaId: item.mangaId, chapterId: item.chapterId })}
                 >
                   <img referrerPolicy="no-referrer"
-                    src={manga.cover}
+                    src={manga.cover} onError={onCoverError}
                     alt={item.mangaTitle}
                     style={{ width: 56, height: 78, objectFit: "cover", borderRadius: "6px" }}
                   />

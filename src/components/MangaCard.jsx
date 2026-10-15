@@ -1,6 +1,7 @@
 import React from "react";
 import { Star, Heart } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
+import { onCoverError } from "../services/mangadexApi";
 
 export default function MangaCard({ manga }) {
   const { navigateTo, favorites, toggleFavorite } = useRomance();
@@ -18,6 +19,7 @@ export default function MangaCard({ manga }) {
           alt={manga.title}
           className="card-cover-img"
           loading="lazy"
+          onError={onCoverError}
         />
         <div className="card-rating-badge">
           <Star size={12} fill="#facc15" />

@@ -3,6 +3,8 @@ import { Search, Filter, Sparkles, Star, Globe, RefreshCw } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
 import { ROMANCE_DATABASE, ROMANCE_GENRES, ROMANCE_TROPES } from "../data/romanceMangaDatabase";
 import { searchMangaDexRomance } from "../services/mangadexApi";
+import { searchAniList } from "../services/anilistApi";
+import { REGISTER_DYNAMIC_MANGA } from "../data/romanceMangaDatabase";
 import MangaCard from "../components/MangaCard";
 
 export default function BrowsePage() {
@@ -12,7 +14,7 @@ export default function BrowsePage() {
   const [selectedDemographic, setSelectedDemographic] = useState("All");
   const [sortBy, setSortBy] = useState("rating"); // 'rating' | 'views' | 'year' | 'title'
   const [browseSearch, setBrowseSearch] = useState("");
-  const [includeMangaDex, setIncludeMangaDex] = useState(false);
+  const [includeMangaDex, setIncludeMangaDex] = useState(true);
   const [mangaDexResults, setMangaDexResults] = useState([]);
   const [isLoadingMangaDex, setIsLoadingMangaDex] = useState(false);
 
@@ -22,8 +24,10 @@ export default function BrowsePage() {
     let isCancelled = false;
     setIsLoadingMangaDex(true);
 
-    searchMangaDexRomance(browseSearch, 8)
+    searchAniList(browseSearch, 24)
+      .catch(() => searchMangaDexRomance(browseSearch, 8))
       .then((data) => {
+        data.forEach((r) => REGISTER_DYNAMIC_MANGA(r));
         if (!isCancelled) {
           setMangaDexResults(data);
           setIsLoadingMangaDex(false);

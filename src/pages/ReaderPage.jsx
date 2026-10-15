@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
 import { ROMANCE_DATABASE, GET_MANGA_BY_ID } from "../data/romanceMangaDatabase";
-import { fetchChapters, fetchChapterPages, fetchMangaCover } from "../services/mangadexApi";
+import { fetchChapters, fetchChapterPages, fetchMangaCover, ensureMangaDexId } from "../services/mangadexApi";
 import CommentsDrawer from "../components/CommentsDrawer";
 import ChapterDrawer from "../components/ChapterDrawer";
 
@@ -45,19 +45,19 @@ export default function ReaderPage({ mangaId, chapterId }) {
 
   // Fetch chapter list from MangaDex
   useEffect(() => {
-    const mangadexId = manga.mangadexId;
-    if (!mangadexId) return;
-
-    fetchChapters(mangadexId).then((chapters) => {
-      setLiveChapters(chapters);
-    });
-
-    if (!manga.cover) {
-      fetchMangaCover(mangadexId).then((url) => {
-        if (url) setLiveCover(url);
-      });
-    }
-  }, [manga.mangadexId, manga.cover]);
+    let cancelled = false;
+    ensureMangaDexId(manga)
+      .then((mangadexId) => {
+        if (!mangadexId || cancelled) return null;
+        if (!manga.cover) fetchMangaCover(mangadexId).then((url) => !cancelled && url && setLiveCover(url));
+        return fetchChapters(mangadexId);
+      })
+      .then((chapters) => chapters && !cancelled && setLiveChapters(chapters))
+      .catch((err) => console.warn("Chapter list unavailable:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [manga.id, manga.cover]);
 
   // Determine chapters source
   const chapters = liveChapters.length > 0 ? liveChapters : (manga.chapters || []);
@@ -500,11 +500,13 @@ export default function ReaderPage({ mangaId, chapterId }) {
                 className={`manga-page-img ${settings.greyscalePages ? "greyscale" : ""}`}
                 loading={settings.preloadMode === "all" || p.page <= 4 ? "eager" : "lazy"}
                 onError={(e) => {
-                  // Try fallback URL (full quality if data-saver failed, or vice versa)
-                  if (p.fallbackUrl && e.target.src !== p.fallbackUrl) {
-                    e.target.src = p.fallbackUrl;
-                  } else if (p.dataSaverUrl && e.target.src !== p.dataSaverUrl) {
-                    e.target.src = p.dataSaverUrl;
+                  // Walk through the candidate URLs: data-saver -> full quality -> via our proxy
+                  const img = e.currentTarget;
+                  const next = Number(img.dataset.attempt || 0) + 1;
+                  const list = p.candidates || [];
+                  if (next < list.length) {
+                    img.dataset.attempt = String(next);
+                    img.src = list[next];
                   }
                 }}
               />
