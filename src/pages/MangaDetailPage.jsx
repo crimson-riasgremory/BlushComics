@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
 import { ROMANCE_DATABASE, GET_MANGA_BY_ID } from "../data/romanceMangaDatabase";
-import { fetchChapters, fetchExternalChapters, fetchMangaCover } from "../services/mangadexApi";
+import { fetchChapters, fetchMangaCover } from "../services/mangadexApi";
 
 export default function MangaDetailPage({ mangaId }) {
   const {
@@ -47,7 +47,6 @@ export default function MangaDetailPage({ mangaId }) {
   const [liveChapters, setLiveChapters] = useState([]);
   const [isLoadingChapters, setIsLoadingChapters] = useState(false);
   const [chapterError, setChapterError] = useState(null);
-  const [externalChapters, setExternalChapters] = useState([]);
   // LIVE cover loading
   const [liveCover, setLiveCover] = useState(manga.cover);
 
@@ -69,10 +68,6 @@ export default function MangaDetailPage({ mangaId }) {
         setChapterError("Could not load chapters from MangaDex. Please try again.");
         setIsLoadingChapters(false);
       });
-
-    fetchExternalChapters(mangadexId)
-      .then(setExternalChapters)
-      .catch(() => setExternalChapters([]));
 
     // Also fetch cover if not already set
     if (!manga.cover) {
@@ -493,33 +488,6 @@ export default function MangaDetailPage({ mangaId }) {
             </div>
           </div>
         </div>
-
-        {externalChapters.length > 0 && (
-          <div
-            style={{
-              margin: "0 0 1rem",
-              padding: "0.8rem 1rem",
-              border: "1px solid #28313e",
-              borderRadius: 10,
-              background: "rgba(34, 211, 238, 0.06)",
-              color: "#cbd5e1",
-              fontSize: "0.85rem",
-              lineHeight: 1.5,
-            }}
-          >
-            <strong style={{ color: "#22d3ee" }}>{externalChapters.length} chapters</strong>{" "}
-            (Ch. {externalChapters[externalChapters.length - 1].chapter}–{externalChapters[0].chapter})
-            are officially licensed and not hosted on MangaDex, so they can't be read here.{" "}
-            <a
-              href={externalChapters[0].url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "#22d3ee", textDecoration: "underline" }}
-            >
-              Read the latest on the official site
-            </a>
-          </div>
-        )}
 
         {/* Chapters List matching Screenshot 4 */}
         <div className="chapters-list">
