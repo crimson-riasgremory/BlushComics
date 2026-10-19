@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
 import { ROMANCE_DATABASE, GET_MANGA_BY_ID } from "../data/romanceMangaDatabase";
-import { fetchChapters, fetchMangaCover } from "../services/mangadexApi";
+import { fetchChapters, fetchExternalChapters, fetchMangaCover, onCoverError, ensureMangaDexId } from "../services/mangadexApi";
 
 export default function MangaDetailPage({ mangaId }) {
   const {
@@ -47,35 +47,45 @@ export default function MangaDetailPage({ mangaId }) {
   const [liveChapters, setLiveChapters] = useState([]);
   const [isLoadingChapters, setIsLoadingChapters] = useState(false);
   const [chapterError, setChapterError] = useState(null);
+  const [externalChapters, setExternalChapters] = useState([]);
   // LIVE cover loading
   const [liveCover, setLiveCover] = useState(manga.cover);
 
-  // Fetch chapters from MangaDex on mount
+  // Fetch chapters from MangaDex on mount (looking up the MangaDex id first if needed)
   useEffect(() => {
-    const mangadexId = manga.mangadexId;
-    if (!mangadexId) return;
-
-    setIsLoadingChapters(true);
+    let cancelled = false;
+    setLiveChapters([]);
+    setExternalChapters([]);
     setChapterError(null);
+    setIsLoadingChapters(true);
 
-    fetchChapters(mangadexId)
-      .then((chapters) => {
-        setLiveChapters(chapters);
+    (async () => {
+      const mangadexId = await ensureMangaDexId(manga);
+      if (cancelled) return;
+      if (!mangadexId) {
         setIsLoadingChapters(false);
-      })
-      .catch((err) => {
+        return;
+      }
+      try {
+        const chapters = await fetchChapters(mangadexId);
+        if (!cancelled) setLiveChapters(chapters);
+      } catch (err) {
         console.warn("Failed to load chapters:", err);
-        setChapterError("Could not load chapters from MangaDex. Please try again.");
-        setIsLoadingChapters(false);
-      });
+        if (!cancelled) setChapterError(`Could not load chapters from MangaDex (${err?.message || "network error"}). Please try again.`);
+      }
+      if (!cancelled) setIsLoadingChapters(false);
+      fetchExternalChapters(mangadexId)
+        .then((ext) => !cancelled && setExternalChapters(ext))
+        .catch(() => {});
+      if (!manga.cover) {
+        fetchMangaCover(mangadexId).then((url) => !cancelled && url && setLiveCover(url));
+      }
+    })();
 
-    // Also fetch cover if not already set
-    if (!manga.cover) {
-      fetchMangaCover(mangadexId).then((url) => {
-        if (url) setLiveCover(url);
-      });
-    }
-  }, [manga.mangadexId, manga.cover]);
+    return () => {
+      cancelled = true;
+    };
+  }, [manga.id, manga.cover]);
 
   const isFav = favorites.includes(manga.id);
   const currentLibraryStatus = library[manga.id]?.status || null;
@@ -144,7 +154,7 @@ export default function MangaDetailPage({ mangaId }) {
       <div className="detail-layout">
         {/* LEFT COLUMN: Cover, Star Rating, Share */}
         <div className="detail-left-col">
-          <img referrerPolicy="no-referrer" src={coverUrl} alt={manga.title} className="detail-cover" />
+          <img referrerPolicy="no-referrer" src={coverUrl} alt={manga.title} className="detail-cover" onError={onCoverError} />
 
           {/* Star Rating Widget */}
           <div
@@ -224,15 +234,16 @@ export default function MangaDetailPage({ mangaId }) {
           <div className="detail-actions" style={{ position: "relative" }}>
             <button
               className="btn-primary"
+              disabled={isLoadingChapters || activeChapters.length === 0}
               onClick={() => {
-                const targetCh = activeChapters.length > 0
-                  ? activeChapters[activeChapters.length - 1]?.id  // First chapter (sorted desc, so last = earliest)
-                  : `${manga.id}-1`;
-                navigateTo("reader", { mangaId: manga.id, chapterId: targetCh });
+                if (activeChapters.length === 0) return;
+                // List is sorted newest-first, so the last entry is chapter 1
+                const first = activeChapters[activeChapters.length - 1];
+                navigateTo("reader", { mangaId: manga.id, chapterId: first.id });
               }}
             >
               <BookOpen size={18} />
-              <span>Start reading</span>
+              <span>{activeChapters.length > 0 ? "Start reading" : "No English chapters"}</span>
             </button>
 
             {/* Follow Dropdown */}
@@ -489,12 +500,12 @@ export default function MangaDetailPage({ mangaId }) {
           </div>
         </div>
 
-        {/* Chapters List matching Screenshot 4 */}
+        {/* Chapters List */}
         <div className="chapters-list">
           {isLoadingChapters ? (
             <div style={{ padding: "3rem", textAlign: "center", color: "#94a3b8" }}>
               <Loader size={24} className="spin" style={{ margin: "0 auto 1rem", display: "block" }} />
-              <p>Fetching chapters from MangaDex...</p>
+              <p>Fetching English chapters from MangaDex...</p>
               <p style={{ fontSize: "0.8rem", marginTop: 4, color: "#64748b" }}>This may take a moment for manga with many chapters.</p>
             </div>
           ) : filteredChapters.length > 0 ? (
@@ -508,11 +519,6 @@ export default function MangaDetailPage({ mangaId }) {
                   <span className="chapter-num">Ch.{ch.chapter}</span>
                   {ch.title && (
                     <span className="chapter-title-text">{ch.title}</span>
-                  )}
-                  {ch.lang && ch.lang !== "en" && (
-                    <span style={{ fontSize: "0.7rem", color: "#f59e0b", marginLeft: 6, textTransform: "uppercase" }}>
-                      [{ch.lang}]
-                    </span>
                   )}
                 </div>
 
@@ -548,7 +554,9 @@ export default function MangaDetailPage({ mangaId }) {
             <div style={{ padding: "2rem", textAlign: "center", color: "#94a3b8" }}>
               {chapterSearch
                 ? `No chapters found matching "${chapterSearch}".`
-                : "No readable chapters available on MangaDex for this title."}
+                : chapterError
+                ? "Chapters could not be loaded right now. Refresh the page to try again."
+                : "No readable English chapters currently available on MangaDex for this title."}
             </div>
           )}
         </div>

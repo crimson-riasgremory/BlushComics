@@ -1,6 +1,8 @@
 {
   "rewrites": [
+    { "source": "/api/md", "destination": "/api/md" },
+    { "source": "/api/img", "destination": "/api/img" },
     { "source": "/md-api/:path*", "destination": "https://api.mangadex.org/:path*" },
-    { "source": "/md-img/:path*", "destination": "https://uploads.mangadex.org/:path*" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
