@@ -5,88 +5,11 @@
 // MangaDex does not allow direct browser (CORS) calls from other websites.
 const MANGADEX_BASE = "/md-api";
 const COVER_BASE = "/md-img";
-// Serverless fallback (api/md.js) used when the plain rewrite is blocked or rate-limited.
-const FALLBACK_API = "/api/md";
 
 /** Rewrite a direct uploads.mangadex.org URL to go through our proxy. */
 export function proxyImage(url) {
   if (!url) return url;
   return url.replace("https://uploads.mangadex.org", COVER_BASE);
-}
-
-const PLACEHOLDER_IMG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='450'><rect width='100%' height='100%' fill='#1c2129'/><text x='50%' y='50%' fill='#64748b' font-family='sans-serif' font-size='16' text-anchor='middle'>No cover</text></svg>"
-  );
-
-/**
- * <img onError={onCoverError}> handler: proxied cover failed -> try the direct
- * MangaDex URL once (plain <img> tags are not subject to CORS) -> placeholder.
- */
-export function onCoverError(e) {
-  const img = e.currentTarget;
-  const stage = Number(img.dataset.fb || 0);
-  if (stage === 0 && img.src.includes(COVER_BASE + "/")) {
-    img.dataset.fb = "1";
-    img.src = "https://uploads.mangadex.org" + img.src.slice(img.src.indexOf(COVER_BASE) + COVER_BASE.length);
-  } else if (stage < 2) {
-    img.dataset.fb = "2";
-    img.src = PLACEHOLDER_IMG;
-  }
-}
-
-// ─── THROTTLED FETCH ──────────────────────────────────────────────────────────
-// MangaDex allows ~5 requests/second per IP, and on Vercel that IP is shared.
-// Space requests out, retry on 429/5xx, and fall back to the serverless proxy.
-
-const MIN_GAP_MS = 260;
-let _lastCall = 0;
-let _chain = Promise.resolve();
-const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function _throttle() {
-  const turn = _chain.then(async () => {
-    const wait = Math.max(0, _lastCall + MIN_GAP_MS - Date.now());
-    if (wait) await _sleep(wait);
-    _lastCall = Date.now();
-  });
-  _chain = turn.catch(() => {});
-  return turn;
-}
-
-function _fallbackUrl(pathAndQuery) {
-  const [path, query = ""] = pathAndQuery.split("?");
-  return `${FALLBACK_API}?path=${encodeURIComponent(path.replace(/^\//, ""))}${query ? "&" + query : ""}`;
-}
-
-/** GET a MangaDex API path (e.g. "/manga?limit=10") and return the Response. */
-async function apiFetch(pathAndQuery, retries = 3) {
-  let lastErr;
-  let useFallback = false;
-  for (let i = 0; i <= retries; i++) {
-    await _throttle();
-    const url = useFallback ? _fallbackUrl(pathAndQuery) : `${MANGADEX_BASE}${pathAndQuery}`;
-    try {
-      const res = await fetch(url);
-      const type = res.headers.get("content-type") || "";
-      // A rewrite that hits the SPA fallback returns HTML with 200 - treat as a failure
-      if (res.ok && type.includes("json")) return res;
-      lastErr = new Error(`HTTP ${res.status}${res.ok ? " (non-JSON response)" : ""}`);
-      if (res.status === 429) {
-        const ra = Number(res.headers.get("retry-after"));
-        await _sleep(Number.isFinite(ra) && ra > 0 ? Math.min(ra, 5) * 1000 : 1200 * (i + 1));
-        continue;
-      }
-      if (res.status === 404) break; // genuinely missing, don't retry
-      useFallback = true; // 403 / 5xx / HTML -> try the serverless proxy next
-    } catch (e) {
-      lastErr = e;
-      useFallback = true;
-    }
-    await _sleep(500 * (i + 1));
-  }
-  throw lastErr;
 }
 
 // Cache to avoid repeated API calls
@@ -107,7 +30,10 @@ export async function fetchMangaCover(mangadexId) {
   if (cache.covers[mangadexId]) return cache.covers[mangadexId];
 
   try {
-    const res = await apiFetch(`/manga/${mangadexId}?includes[]=cover_art`);
+    const res = await fetch(
+      `${MANGADEX_BASE}/manga/${mangadexId}?includes[]=cover_art`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
 
     const coverRel = json.data?.relationships?.find(r => r.type === "cover_art");
@@ -141,15 +67,17 @@ export async function fetchAllCovers(mangadexIds) {
       params.set("limit", String(uncached.length));
       params.append("includes[]", "cover_art");
 
-      const res = await apiFetch(`/manga?${params.toString()}`);
-      const json = await res.json();
-      (json.data || []).forEach(manga => {
-        const coverRel = manga.relationships?.find(r => r.type === "cover_art");
-        const fileName = coverRel?.attributes?.fileName;
-        if (fileName) {
-          cache.covers[manga.id] = `${COVER_BASE}/covers/${manga.id}/${fileName}.512.jpg`;
-        }
-      });
+      const res = await fetch(`${MANGADEX_BASE}/manga?${params.toString()}`);
+      if (res.ok) {
+        const json = await res.json();
+        (json.data || []).forEach(manga => {
+          const coverRel = manga.relationships?.find(r => r.type === "cover_art");
+          const fileName = coverRel?.attributes?.fileName;
+          if (fileName) {
+            cache.covers[manga.id] = `${COVER_BASE}/covers/${manga.id}/${fileName}.512.jpg`;
+          }
+        });
+      }
     } catch (err) {
       console.warn("Batch cover fetch error:", err);
     }
@@ -216,7 +144,7 @@ async function _fetchFeed(mangadexId, limit) {
     ["safe", "suggestive", "erotica"].forEach((r) => params.append("contentRating[]", r));
     params.append("includes[]", "scanlation_group");
 
-    const res = await apiFetch(`/manga/${mangadexId}/feed?${params.toString()}`);
+    const res = await fetchWithRetry(`${MANGADEX_BASE}/manga/${mangadexId}/feed?${params.toString()}`);
     const json = await res.json();
     if (!json.data || json.data.length === 0) break;
     all.push(...json.data);
@@ -224,11 +152,8 @@ async function _fetchFeed(mangadexId, limit) {
     offset += perPage;
   }
 
-  // Licensed chapters (MangaPlus, Viz...) carry an externalUrl. MangaDex may still
-  // report pages > 0 for them (a placeholder "EXTERNAL CHAPTER" card), but there is
-  // nothing real to read, so they must never be treated as readable.
-  const externalRaw = all.filter((ch) => ch.attributes.externalUrl);
-  const readableRaw = all.filter((ch) => !ch.attributes.externalUrl && ch.attributes.pages > 0);
+  const readableRaw = all.filter((ch) => ch.attributes.pages > 0);
+  const externalRaw = all.filter((ch) => !(ch.attributes.pages > 0) && ch.attributes.externalUrl);
 
   // One entry per chapter number: English preferred, otherwise first other language
   const byNumber = new Map();
@@ -264,17 +189,12 @@ async function _fetchFeed(mangadexId, limit) {
   const extSeen = new Map();
   externalRaw.forEach((ch) => {
     const key = ch.attributes.chapter != null ? String(ch.attributes.chapter) : `id-${ch.id}`;
-    const existingExt = extSeen.get(key);
-    const isEnExt = ch.attributes.translatedLanguage === "en";
-    if (!existingExt || (isEnExt && !existingExt._en)) {
+    if (!extSeen.has(key)) {
       extSeen.set(key, {
-        _en: isEnExt,
         id: ch.id,
         chapter: ch.attributes.chapter || "0",
         title: ch.attributes.title || `Chapter ${ch.attributes.chapter || "0"}`,
         url: ch.attributes.externalUrl,
-        timeAgo: formatPublishTime(ch.attributes.publishAt),
-        date: ch.attributes.publishAt ? ch.attributes.publishAt.split("T")[0] : "",
       });
     }
   });
@@ -286,6 +206,23 @@ async function _fetchFeed(mangadexId, limit) {
   return { readable, external };
 }
 
+// Retry once on rate-limit (429) or server errors
+async function fetchWithRetry(url, retries = 2) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+      if (res.status !== 429 && res.status < 500) break;
+    } catch (e) {
+      lastErr = e;
+    }
+    await new Promise((r) => setTimeout(r, 700 * (i + 1)));
+  }
+  throw lastErr;
+}
+
 // ─── CHAPTER PAGES (AT-HOME SERVER) ──────────────────────────────────────────
 
 /**
@@ -295,40 +232,54 @@ async function _fetchFeed(mangadexId, limit) {
 export async function fetchChapterPages(chapterId) {
   if (cache.pages[chapterId]) return cache.pages[chapterId];
 
-  // Throws on network/API failure (reader shows "failed, retry"); returns [] when the
-  // chapter genuinely has no pages (reader shows "external-only chapter").
-  const res = await apiFetch(`/at-home/server/${chapterId}`);
-  const json = await res.json();
+  try {
+    const res = await fetchWithRetry(`${MANGADEX_BASE}/at-home/server/${chapterId}`);
+    const json = await res.json();
 
-  const baseUrl = json.baseUrl;
-  const hash = json.chapter?.hash;
-  const dataFiles = json.chapter?.data || [];
-  const dataSaverFiles = json.chapter?.dataSaver || [];
-  if (!baseUrl || !hash) return [];
+    const baseUrl = json.baseUrl;
+    const hash = json.chapter?.hash;
+    const dataFiles = json.chapter?.data || [];
+    const dataSaverFiles = json.chapter?.dataSaver || [];
 
-  const useSaver = dataSaverFiles.length > 0;
-  const files = useSaver ? dataSaverFiles : dataFiles;
+    // Use data-saver as primary since it's more reliable on the CDN
+    // and fall back to full quality
+    const pages = (dataSaverFiles.length > 0 ? dataSaverFiles : dataFiles).map((fileName, index) => {
+      const isDataSaver = dataSaverFiles.length > 0;
+      const primaryUrl = isDataSaver
+        ? `${baseUrl}/data-saver/${hash}/${fileName}`
+        : `${baseUrl}/data/${hash}/${fileName}`;
+      const fallbackUrl = isDataSaver && dataFiles[index]
+        ? `${baseUrl}/data/${hash}/${dataFiles[index]}`
+        : primaryUrl;
 
-  const pages = files.map((fileName, index) => {
-    const saverUrl = dataSaverFiles[index] ? `${baseUrl}/data-saver/${hash}/${dataSaverFiles[index]}` : null;
-    const fullUrl = dataFiles[index] ? `${baseUrl}/data/${hash}/${dataFiles[index]}` : null;
-    const primary = useSaver ? saverUrl : fullUrl;
-    // Ordered list of URLs to try if an image fails to load
-    const candidates = [primary, useSaver ? fullUrl : saverUrl];
-    candidates.push(...candidates.map(proxyImage)); // via our proxy if host is uploads.mangadex.org
-    const unique = [...new Set(candidates.filter(Boolean))];
+      return {
+        page: index + 1,
+        url: primaryUrl,
+        fallbackUrl: fallbackUrl,
+        dataSaverUrl: dataSaverFiles[index]
+          ? `${baseUrl}/data-saver/${hash}/${dataSaverFiles[index]}`
+          : primaryUrl
+      };
+    });
 
-    return {
-      page: index + 1,
-      url: primary,
-      fallbackUrl: fullUrl || primary,
-      dataSaverUrl: saverUrl || primary,
-      candidates: unique,
-    };
-  });
+    // If dataSaver is empty, try full data
+    if (pages.length === 0 && dataFiles.length > 0) {
+      const fullPages = dataFiles.map((fileName, index) => ({
+        page: index + 1,
+        url: `${baseUrl}/data/${hash}/${fileName}`,
+        fallbackUrl: `${baseUrl}/data/${hash}/${fileName}`,
+        dataSaverUrl: `${baseUrl}/data/${hash}/${fileName}`
+      }));
+      cache.pages[chapterId] = fullPages;
+      return fullPages;
+    }
 
-  if (pages.length > 0) cache.pages[chapterId] = pages;
-  return pages;
+    cache.pages[chapterId] = pages;
+    return pages;
+  } catch (err) {
+    console.warn(`Failed to fetch pages for chapter ${chapterId}:`, err);
+    return [];
+  }
 }
 
 // ─── SEARCH ───────────────────────────────────────────────────────────────────
@@ -356,7 +307,8 @@ export async function searchMangaDex(query, limit = 20) {
       params.set("title", query.trim());
     }
 
-    const res = await apiFetch(`/manga?${params.toString()}`);
+    const res = await fetch(`${MANGADEX_BASE}/manga?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
 
     const results = (json.data || []).map(transformMangaDexResult);
@@ -386,7 +338,8 @@ export async function browseRomanceManga(limit = 30, offset = 0) {
     params.append("availableTranslatedLanguage[]", "en");
     params.append("includedTags[]", "423e2eae-a7a2-4a8b-ac03-a8351462d71d");
 
-    const res = await apiFetch(`/manga?${params.toString()}`);
+    const res = await fetch(`${MANGADEX_BASE}/manga?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
 
     return (json.data || []).map(transformMangaDexResult);
@@ -473,134 +426,4 @@ export function clearCache() {
   cache.chapters = {};
   cache.pages = {};
   cache.searchResults = {};
-}
-
-// ─── RESOLVE A MANGADEX ID FOR TITLES THAT CAME FROM ANILIST ─────────────────
-
-const _norm = (t) => (t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-/**
- * Make sure `manga.mangadexId` is set (looks it up by title if needed).
- * Returns the id, or null when MangaDex has no matching title.
- */
-export async function ensureMangaDexId(manga) {
-  if (manga.mangadexId) return manga.mangadexId;
-  if (manga._mdLookupDone) return null;
-  const titles = [manga.title, manga.romajiTitle].filter(Boolean);
-  try {
-    for (const t of titles) {
-      const res = await apiFetch(`/manga?title=${encodeURIComponent(t)}&limit=5&order[relevance]=desc`);
-      const json = await res.json();
-      const wanted = new Set(titles.map(_norm));
-      const hit = (json.data || []).find((m) => {
-        const all = [...Object.values(m.attributes?.title || {}), ...(m.attributes?.altTitles || []).flatMap((a) => Object.values(a))];
-        return all.some((x) => wanted.has(_norm(x)));
-      });
-      if (hit) {
-        manga.mangadexId = hit.id;
-        return hit.id;
-      }
-    }
-  } catch (e) {
-    console.warn("MangaDex lookup failed:", e);
-    return null; // don't mark as done: allow retry
-  }
-  manga._mdLookupDone = true;
-  return null;
-}
-
-/** Quick health check used by the status banner. */
-export async function pingMangaDex() {
-  const res = await fetch(`${MANGADEX_BASE}/ping`, { cache: "no-store" });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  if (!/pong/i.test(text)) throw new Error("proxy returned a non-API response");
-  return true;
-}
-
-// ─── FIND TITLES THAT ARE ACTUALLY READABLE ON MANGADEX ──────────────────────
-// Most big romance series are officially licensed and have NO readable chapters on
-// MangaDex. These helpers probe for real, readable English chapters.
-
-const READ_CACHE_KEY = "amore_readable_v1";
-const READ_TTL = 6 * 60 * 60 * 1000;
-
-function _readCache() {
-  try {
-    return JSON.parse(sessionStorage.getItem(READ_CACHE_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
-function _writeCache(c) {
-  try {
-    sessionStorage.setItem(READ_CACHE_KEY, JSON.stringify(c));
-  } catch { /* storage full or blocked */ }
-}
-
-/** true if the title has at least one real (non-external) English chapter with pages. */
-export async function hasReadableChapters(mangadexId) {
-  const store = _readCache();
-  const hit = store[mangadexId];
-  if (hit && Date.now() - hit.t < READ_TTL) return hit.v;
-
-  const params = new URLSearchParams({ limit: "1", includeExternalUrl: "0" });
-  params.append("translatedLanguage[]", "en");
-  ["safe", "suggestive", "erotica"].forEach((r) => params.append("contentRating[]", r));
-  const res = await apiFetch(`/manga/${mangadexId}/feed?${params.toString()}`);
-  const json = await res.json();
-  const ok = (json.data || []).some((c) => c.attributes?.pages > 0 && !c.attributes?.externalUrl);
-
-  const fresh = _readCache();
-  fresh[mangadexId] = { v: ok, t: Date.now() };
-  _writeCache(fresh);
-  return ok;
-}
-
-/**
- * Popular romance titles that really have readable English chapters.
- * Calls onFound(listSoFar) as each verified title is found so the UI fills in progressively.
- */
-export async function fetchReadableRomance({ target = 24, candidates = 60, onFound } = {}) {
-  const params = new URLSearchParams({
-    limit: String(candidates),
-    "order[followedCount]": "desc",
-    hasAvailableChapters: "true",
-  });
-  params.append("includes[]", "cover_art");
-  params.append("includes[]", "author");
-  params.append("availableTranslatedLanguage[]", "en");
-  params.append("includedTags[]", "423e2eae-a7a2-4a8b-ac03-a8351462d71d");
-  ["safe", "suggestive"].forEach((r) => params.append("contentRating[]", r));
-
-  const res = await apiFetch(`/manga?${params.toString()}`);
-  const json = await res.json();
-  const list = (json.data || []).map(transformMangaDexResult);
-
-  const found = [];
-  for (const m of list) {
-    try {
-      if (await hasReadableChapters(m.mangadexId)) {
-        m.readable = true;
-        found.push(m);
-        onFound?.([...found]);
-        if (found.length >= target) break;
-      }
-    } catch (e) {
-      console.warn("Readable check failed:", e);
-    }
-  }
-  return found;
-}
-
-/** Flag curated titles with readable=true/false (null if the check failed). */
-export async function markReadability(mangaList) {
-  for (const m of mangaList) {
-    if (!m.mangadexId) continue;
-    try {
-      m.readable = await hasReadableChapters(m.mangadexId);
-    } catch {
-      m.readable = null;
-    }
-  }
 }

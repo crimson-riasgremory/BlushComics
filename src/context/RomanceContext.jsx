@@ -30,7 +30,7 @@ export function RomanceProvider({ children }) {
     }
     if (hash === "/library") return { view: "library" };
     if (hash === "/browse") return { view: "browse" };
-    return { view: "manga", mangaId: "blue-box" };
+    return { view: "home", mangaId: null, chapterId: null };
   });
 
   // Settings
@@ -164,12 +164,7 @@ export function RomanceProvider({ children }) {
   };
 
   const navigateTo = (view, params = {}) => {
-    // Single-series site: every non-reader view is the Blue Box page
-    if (view !== "reader") {
-      setRoute({ view: "manga", mangaId: "blue-box" });
-    } else {
-      setRoute({ view, ...params });
-    }
+    setRoute({ view, ...params });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 

@@ -2,9 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Search, Filter, Sparkles, Star, Globe, RefreshCw } from "lucide-react";
 import { useRomance } from "../context/RomanceContext";
 import { ROMANCE_DATABASE, ROMANCE_GENRES, ROMANCE_TROPES } from "../data/romanceMangaDatabase";
-import { searchMangaDexRomance, fetchReadableRomance } from "../services/mangadexApi";
-import { searchAniList } from "../services/anilistApi";
-import { REGISTER_DYNAMIC_MANGA } from "../data/romanceMangaDatabase";
+import { searchMangaDexRomance } from "../services/mangadexApi";
 import MangaCard from "../components/MangaCard";
 
 export default function BrowsePage() {
@@ -14,7 +12,7 @@ export default function BrowsePage() {
   const [selectedDemographic, setSelectedDemographic] = useState("All");
   const [sortBy, setSortBy] = useState("rating"); // 'rating' | 'views' | 'year' | 'title'
   const [browseSearch, setBrowseSearch] = useState("");
-  const [includeMangaDex, setIncludeMangaDex] = useState(true);
+  const [includeMangaDex, setIncludeMangaDex] = useState(false);
   const [mangaDexResults, setMangaDexResults] = useState([]);
   const [isLoadingMangaDex, setIsLoadingMangaDex] = useState(false);
 
@@ -24,26 +22,16 @@ export default function BrowsePage() {
     let isCancelled = false;
     setIsLoadingMangaDex(true);
 
-    const finish = () => !isCancelled && setIsLoadingMangaDex(false);
-    if (!browseSearch.trim()) {
-      // No search text: show titles verified as readable on MangaDex
-      fetchReadableRomance({
-        target: 30,
-        onFound: (list) => {
-          list.forEach((r) => REGISTER_DYNAMIC_MANGA(r));
-          if (!isCancelled) setMangaDexResults(list);
-        },
-      }).catch(() => {}).finally(finish);
-    } else {
-      searchAniList(browseSearch, 24)
-        .catch(() => searchMangaDexRomance(browseSearch, 8))
-        .then((data) => {
-          data.forEach((r) => REGISTER_DYNAMIC_MANGA(r));
-          if (!isCancelled) setMangaDexResults(data);
-        })
-        .catch(() => {})
-        .finally(finish);
-    }
+    searchMangaDexRomance(browseSearch, 8)
+      .then((data) => {
+        if (!isCancelled) {
+          setMangaDexResults(data);
+          setIsLoadingMangaDex(false);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) setIsLoadingMangaDex(false);
+      });
 
     return () => {
       isCancelled = true;
@@ -200,7 +188,7 @@ export default function BrowsePage() {
           <div className="section-header">
             <div className="section-title-wrap">
               <Globe size={20} color="#ff4d79" />
-              <h2 className="section-title">Live Romance Catalog</h2>
+              <h2 className="section-title">Live From MangaDex Romance Database</h2>
               {isLoadingMangaDex && <RefreshCw size={16} className="spin" color="#22d3ee" />}
             </div>
           </div>
